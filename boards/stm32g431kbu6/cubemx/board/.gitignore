@@ -1,0 +1,7 @@
+/cmake
+/Drivers
+.mxproject
+CMakeLists.txt
+CMakePresets.json
+startup_stm32g431xx.s
+STM32G431XX_FLASH.ld

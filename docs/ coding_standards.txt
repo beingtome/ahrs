@@ -1,0 +1,463 @@
+================================================================================
+                    AHRS 项目 — C 编码规范
+================================================================================
+
+文档版本 : v1.0
+适用范围 : 本项目所有 C 源码（chips/ boards/ drivers/ middleware/ app/）
+参考来源 : Google C++ Style Guide, Linux Kernel Coding Style, Zephyr Coding Style
+日期     : 2026-06-21
+
+================================================================================
+1. 命名规范
+================================================================================
+
+1.1 文件命名
+────────────────
+  - 全部小写，单词间用下划线分隔
+  - 头文件 .h，源文件 .c
+  - 芯片层文件前缀表示平台：
+
+    ✅ chip_gpio.c, bus_i2c.h, icm42688.c, board_config.h
+    ✅ stm32_i2c.c, at32_spi.c, esp32_gpio.c
+    ❌ ChipGPIO.c, Bus-I2C.h, icm42688.cpp
+
+1.2 类型命名（typedef / struct / enum）
+───────────────────────────────────────
+  - 全部小写 + 下划线，以 _t 结尾
+  - 枚举值全部大写 + 下划线
+
+    ✅ typedef struct { ... } gpio_pin_t;
+    ✅ typedef enum { GPIO_MODE_INPUT, GPIO_MODE_OUTPUT_PP } gpio_mode_t;
+    ❌ typedef struct { ... } GpioPin;
+    ❌ typedef enum { gpioModeInput } gpio_mode_t;
+
+1.3 函数命名
+────────────
+  - 全部小写 + 下划线
+  - 动词在前，名词在后
+  - 模块前缀表示所属层：
+
+    boards 层:  board_init, board_get_devices
+    chips 层:   chip_gpio_init, stm32_i2c_create, at32_spi_create
+    drivers 层: device_register, icm42688_read_accel, mmc5603_create
+    app 层:     user_main
+
+    ✅ stm32_i2c_create, icm42688_read_accel, device_find, board_init
+    ❌ STM32_I2C_Create, readAccelIcm42688, findDevice
+
+1.4 变量命名
+────────────
+  - 全部小写 + 下划线
+  - 全局变量加 g_ 前缀（必须谨慎使用，尽量用 static 文件作用域）
+  - 指针变量名可以带 _p 后缀（非强制，取决于可读性）
+
+    ✅ int sensor_count;
+    ✅ static bus_i2c_t *g_bus_i2c1;
+    ✅ const char *name = "icm42688";
+    ❌ int sensorCount;
+    ❌ bus_i2c_t *BusI2C1;
+
+1.5 宏命名
+──────────
+  - 全部大写 + 下划线
+  - 宏功能明确，避免魔法数字
+
+    ✅ #define MAX_DEVICES 16
+    ✅ #define ICM42688_I2C_ADDR 0x68
+    ✅ #define BOARD_SYS_CLOCK_HZ 144000000UL
+    ❌ #define MaxDevices 16
+    ❌ #define addr 0x68
+
+
+================================================================================
+2. 文件组织规范
+================================================================================
+
+2.1 头文件保护
+──────────────
+  使用 #ifndef / #define / #endif，宏名格式：__MODULE_NAME_H
+
+    ✅
+    #ifndef __BOARD_H
+    #define __BOARD_H
+    ...
+    #endif /* __BOARD_H */
+
+    ❌
+    #pragma once    （不可移植，部分嵌入式编译器不支持）
+
+2.2 Include 顺序
+────────────────
+  每个 .c 文件的 #include 按以下顺序分组，组间空一行：
+
+    第一组：本文件对应的头文件（如有）
+    第二组：本项目其他头文件（按层从低到高）
+    第三组：标准 C 库头文件
+    第四组：芯片 HAL 头文件（仅 L0/L1 层）
+
+  例（board.c）：
+    #include "board.h"
+
+    #include "chip_system.h"
+    #include "chip_gpio.h"
+    #include "chip_i2c.h"
+    #include "device.h"
+
+    #include <stdint.h>
+    #include <string.h>
+
+    #include "stm32g4xx_hal.h"
+
+2.3 头文件最小化原则
+────────────────────
+  头文件只包含必须暴露给使用者的内容。实现细节留在 .c。
+  头文件中的 #include 只包含本头文件直接使用的类型。
+
+    ✅ board.h 包含 "bus_i2c.h"（因为要用 bus_i2c_t*）
+    ✅ board.h 包含 "device.h"  （因为要用 device_type_t）
+    ❌ board.h 包含 "stm32g4xx_hal.h"（芯片细节不应泄露到 boards 层声明）
+
+
+================================================================================
+3. 代码格式
+================================================================================
+
+3.1 缩进
+────────
+  - 使用 4 个空格，不使用 Tab
+  - 不允许混合空格/Tab
+
+3.2 行长度
+──────────
+  - 推荐 ≤ 100 字符
+  - 强制 ≤ 120 字符（超过必须换行）
+
+3.3 大括号
+──────────
+  使用 K&R 风格：左大括号不换行，右大括号独占一行。
+
+    ✅
+    if (x > 0) {
+        do_something();
+    } else {
+        do_other();
+    }
+
+    ✅
+    for (int i = 0; i < n; i++) {
+        process(i);
+    }
+
+    ✅ int board_init(void) {
+        chip_system_init();
+        return 0;
+    }
+
+    ❌    （GNU 风格，本项目不使用）
+    if (x > 0)
+      {
+        do_something();
+      }
+
+  函数体不可省略大括号（即使只有一行）：
+
+    ✅ if (x) { return x; }
+    ❌ if (x) return x;
+
+3.4 空格
+────────
+  - 关键字后加空格：if (, for (, while (, switch (
+  - 逗号后加空格：func(a, b, c)
+  - 二元运算符两侧加空格：a + b, x = y
+  - 一元运算符不加空格：!flag, -value, *ptr
+  - 函数调用括号紧贴函数名：func()，不是 func ()
+
+    ✅ if (ret == 0) { return ret; }
+    ✅ for (int i = 0; i < n; i++) { ... }
+    ❌ if(ret==0){return ret;}
+
+3.5 指针声明
+────────────
+  星号紧贴变量名，不贴类型名：
+
+    ✅ int *ptr;
+    ✅ const char *name;
+    ❌ int* ptr;
+    ❌ int * ptr;
+
+3.6 switch 语句
+───────────────
+  每个 case 必须 break 或明确标注 fall through：
+
+    ✅
+    switch (type) {
+    case DEV_TYPE_IMU:
+        init_imu();
+        break;
+    case DEV_TYPE_MAG:
+        /* fall through */
+    case DEV_TYPE_BARO:
+        init_spi_sensor();
+        break;
+    default:
+        break;
+    }
+
+
+================================================================================
+4. 注释规范
+================================================================================
+
+4.1 文件头注释
+──────────────
+  每个 .h / .c 文件开头必须有简短注释，说明文件职责：
+
+    /**
+     * @file    board.c
+     * @brief   STM32G431KBU6 板级初始化
+     *
+     * 硬件拓扑初始化 + 设备注册。不包含业务逻辑。
+     */
+
+4.2 函数注释
+────────────
+  公开 API 函数（在 .h 中声明的）必须注释参数和返回值：
+
+    /**
+     * @brief  初始化板级硬件和注册设备
+     * @return 0 成功, 负数 失败
+     */
+    int board_init(void);
+
+    /**
+     * @brief  注册设备到全局设备表
+     * @param  name  设备名称（全局唯一）
+     * @param  type  设备类型
+     * @param  bind  总线绑定信息
+     * @return 0 成功, -1 表满, -2 重名
+     */
+    int device_register(const char *name, device_type_t type,
+                        const dev_bind_t *bind);
+
+  内部 static 函数按需注释，不强求。
+
+4.3 行内注释
+────────────
+  - 用 // 而非 /* */
+  - 解释"为什么"而非"是什么"（代码本身说明"是什么"）
+  - 不用注释关闭代码块（用 git 管理历史版本）
+
+    ✅ int timeout = 100; // ICM-42688 从睡眠唤醒需要 30ms, 100ms 留余量
+    ❌ int timeout = 100; // 设置 timeout 为 100
+    ❌ // int old_timeout = 50;  ← 旧代码请删掉，不要注释
+
+
+================================================================================
+5. 类型与安全
+================================================================================
+
+5.1 整数类型
+────────────
+  - 使用 stdint.h 的固定宽度类型，不用 int/long/short
+  - 非负值用 uint，可能有符号用 int
+  - size/count 用 size_t 或 uint16_t
+  - 布尔值用 <stdbool.h> 的 bool / true / false
+
+    ✅ uint16_t addr;
+    ✅ int32_t offset;
+    ✅ bool ready;
+    ❌ unsigned short addr;
+    ❌ int flag;
+
+5.2 const 正确性
+────────────────
+  不修改的参数一律加 const：
+
+    ✅ int device_register(const char *name, device_type_t type,
+                           const dev_bind_t *bind);
+    ❌ int device_register(char *name, device_type_t type,
+                           dev_bind_t *bind);
+
+  返回不可修改指针的函数加 const：
+
+    ✅ const board_dev_desc_t *board_get_devices(void);
+
+5.3 哨兵与空指针检查
+────────────────────
+  对外 API 必须检查空指针参数：
+
+    ✅
+    device_t *device_find(const char *name)
+    {
+        if (!name) return NULL;
+        ...
+    }
+
+  内部函数如果调用者保证不为空，可加断言或注释说明。
+
+5.4 数组终止标记
+────────────────
+  需要遍历的数组使用哨兵终止（而非显式传递长度）：
+
+    ✅
+    const board_dev_desc_t board_devices[] = {
+        { "icm42688", DEV_TYPE_IMU, ... },
+        { NULL, DEV_TYPE_UNKNOWN }  // 哨兵
+    };
+
+    for (const board_dev_desc_t *d = board_devices; d->name; d++) { ... }
+
+
+================================================================================
+6. 函数设计
+================================================================================
+
+6.1 函数长度
+────────────
+  - 单个函数 ≤ 50 行（不含注释）
+  - 超过 50 行考虑拆分为子函数
+  - init 类函数可适当放宽
+
+6.2 单一职责
+────────────
+  一个函数只做一件事。函数名应准确描述其职责：
+
+    ✅ chip_gpio_init_all()   — 只做 GPIO 初始化
+    ❌ chip_init_everything() — 什么都做
+
+6.3 返回值
+──────────
+  - 成功返回 0，失败返回负数错误码（-1 通用错误，-2 参数错误等）
+  - 不自定义错误码时用 -1 表示失败
+  - 获取数据的函数返回 NULL 表示失败，返回指针表示成功
+  - 禁止混合返回，如 -1 失败/指针 成功/正数 成功，一律用函数名清晰表达语义
+
+    ✅ int  init(void);           // 返回 0 成功 / <0 失败
+    ✅ device_t *find(name);      // 返回指针 / NULL
+    ❌ int  find(name, &out);     // 返回 0/1 同时又用 out 参数
+
+
+================================================================================
+7. 错误处理
+================================================================================
+
+7.1 早期返回
+────────────
+  错误情况尽早返回，避免深层嵌套：
+
+    ✅
+    int foo(int x) {
+        if (x < 0) return -1;
+        if (!ready) return -2;
+        do_work(x);
+        return 0;
+    }
+
+    ❌
+    int foo(int x) {
+        if (x >= 0) {
+            if (ready) {
+                do_work(x);
+                return 0;
+            } else {
+                return -2;
+            }
+        } else {
+            return -1;
+        }
+    }
+
+7.2 assert 的使用
+─────────────────
+  仅在 DEBUG 构建中使用 assert 验证不变量（不应出现的条件）。
+  运行时可恢复的错误用 if + return，不用 assert。
+
+    ✅
+    void set_index(int i) {
+        assert(i >= 0 && i < MAX);  // 调用者违反约定
+        data[i] = value;
+    }
+
+    ✅
+    int open(const char *name) {
+        if (!name) return -1;       // 运行时合法错误
+        ...
+    }
+
+
+================================================================================
+8. 平台相关代码
+================================================================================
+
+8.1 平台隔离原则
+────────────────
+  芯片相关代码必须封装在 chips/<platform>/ 目录内。
+  芯片无关代码（drivers/, middleware/, app/）不得包含平台特定头文件。
+
+    ✅ boards/ 调用 stm32_i2c_create(&hi2c1);
+    ✅ chips/at32/hal/ 中定义 at32_i2c_create();
+    ❌ drivers/sensors/ 中 #include "stm32g4xx_hal.h"
+
+8.2 条件编译
+────────────
+  如果需要按平台编译不同实现，使用目录隔离（不同 chip 目录）而非 #ifdef：
+
+    ✅ boards/stm32g431kbu6/board.c  → 调用 stm32_i2c_create
+    ✅ boards/at32f435/board.c       → 调用 at32_i2c_create
+    ❌ board.c 中 ifdef STM32 ... elif AT32 ...
+
+
+================================================================================
+9. 头文件依赖图（本项目的层的 include 规则）
+================================================================================
+
+  ✓ 表示可以 include，✗ 表示禁止 include
+
+                chips/  drivers/  boards/  middleware/  app/
+  chips/         ✓       ✗        ✗        ✗           ✗
+  drivers/hal/   ✗       ✓        ✓        ✓           ✓
+  boards/        ✓       ✓        ✓        ✗           ✗
+  middleware/    ✗       ✓        ✗        ✓           ✓
+  app/           ✗       ✓        ✗        ✓           ✓
+
+  核心规则：L0（boards/）只能被自身 include。L1~L5 禁止 include boards/。
+
+
+================================================================================
+10. Git 提交规范
+=================================================================================
+
+10.1 提交消息格式
+─────────────────
+  <type>(<scope>): <简短描述>
+
+  type:
+    feat     — 新功能
+    fix      — 修复 Bug
+    refactor — 重构（不改变行为）
+    docs     — 文档变更
+    style    — 代码格式（不影响逻辑）
+    chore    — 构建/工具变更
+
+  例：
+    feat(boards): 添加 stm32g431kbu6 板级支持
+    fix(i2c): 修复超时返回值
+    refactor(device): 设备表改用静态数组
+
+10.2 提交粒度
+─────────────
+  - 一次提交只做一件事
+  - 不混合功能变更和格式修正
+  - WIP 提交先 squash 再合入 main 分支
+
+
+================================================================================
+附录：快速检查清单
+================================================================================
+
+  命名：全小写+下划线？类型 _t 结尾？宏全大写？
+  格式：4 空格缩进？K&R 大括号？≤120 字符/行？
+  安全：const 正确？空指针检查？哨兵终止？
+  层隔离：没有跨层 include？
+  注释：文件头？公开 API 注释？不说废话？
+================================================================================

@@ -1,0 +1,532 @@
+================================================================================
+                      AHRS 项目 — Chips 层设计文档
+================================================================================
+
+文档版本 : v1.0
+日期     : 2026-06-21
+
+================================================================================
+1. 一句话定位
+================================================================================
+
+Chips 层回答一个问题：如何把"芯片厂商的 HAL/SDK"翻译为"本项目 L2 层的统一接口"？
+
+它是一层薄薄的适配胶水。它不发明新抽象，只做翻译和包装。
+
+
+================================================================================
+2. 架构位置
+================================================================================
+
+  L5  应用层        app/
+  L4  中间件层      middleware/
+  L3  传感器驱动层  drivers/sensors/      只看到 bus_i2c_t* / bus_spi_t*
+  L2  驱动抽象层    drivers/hal/          定义接口类型（bus_i2c_t, gpio_pin_t）
+  L1  芯片支持层    chips/                实现 L2 接口 ← 本层
+  L0  BSP 层       boards/               调用 L1 工厂函数
+
+依赖铁律：
+  - chips/ 只能 #include drivers/hal/（L2 接口类型）
+  - chips/ 可以 #include 芯片厂商的 HAL/SDK 头文件
+  - chips/ 禁止 #include boards/, middleware/, app/
+  - chips/ 禁止 #include drivers/sensors/（传感器驱动在 L3，比 L1 高）
+
+
+================================================================================
+3. 目录结构
+================================================================================
+
+chips/
+├── stm32/                        STM32 全系
+│   └── g4xx/                     STM32G4 系列（当前使用）
+│       ├── CMSIS/                ARM CMSIS（内核头文件 + 启动文件 + 链接脚本）
+│       ├── STM32G4xx_HAL_Driver/ ST 官方 HAL 库（不改动，原样保留）
+│       │   ├── Inc/
+│       │   └── Src/
+│       └── hal/                  ★ 本项目的适配层 ★
+│           ├── chip_system.h     系统初始化（时钟 + HAL）
+│           ├── chip_system.c
+│           ├── chip_gpio.h       GPIO 操作封装
+│           ├── chip_gpio.c
+│           ├── chip_i2c.h        I2C 总线工厂
+│           ├── chip_i2c.c
+│           ├── chip_spi.h        SPI 总线工厂
+│           └── chip_spi.c
+│
+├── at32/                         Artery AT32 全系（预留）
+│   └── f435/
+│       ├── CMSIS/
+│       ├── AT32F435_StdPeriph_Driver/  或 Artery HAL
+│       └── hal/                  ← 同样的接口文件名，不同的实现
+│           ├── chip_system.h
+│           ├── chip_system.c
+│           ├── chip_gpio.h
+│           ├── chip_gpio.c
+│           ├── chip_i2c.h
+│           ├── chip_i2c.c
+│           ├── chip_spi.h
+│           └── chip_spi.c
+│
+└── esp32/                        ESP32 全系（预留）
+    └── hal/                      ← 接口名相同，内部用 ESP-IDF 实现
+        ├── chip_system.h
+        ├── chip_system.c
+        └── ...
+
+设计原则：
+  1. 每个芯片平台在 chips/ 下有自己的子目录
+  2. 同一芯片的不同系列（如 stm32/g4xx vs stm32/f4xx）共享同一套 hal/ 接口名
+     但内部实现不同（HAL 库版本不同、寄存器不同）
+  3. 芯片厂商的原始 SDK 原样放在对应目录下，不做任何修改
+     这是为了：厂商 SDK 升级时可以直接覆盖，不影响我们的 hal/ 适配代码
+  4. hal/ 才是"我们的代码"。它引用厂商 SDK，向上暴露统一接口
+
+
+================================================================================
+4. 核心接口定义（本层对外暴露的函数签名）
+================================================================================
+
+chips 层向上暴露的所有接口都通过 chips/<platform>/<series>/hal/ 下的头文件声明。
+所有平台必须提供同一套 .h 文件名和函数签名（函数名前缀允许不同，因为 board.c 需要显式选择平台）。
+
+4.1 chip_system.h — 系统初始化
+ ───────────────────────────────
+
+    int  chip_system_init(void);        // HAL初始化 + 时钟配置，返回 0 成功
+    void chip_system_delay_ms(uint32_t ms);
+    uint32_t chip_system_clock_hz(void);
+
+  注意：
+  - chip_system_init() 内部调用 HAL_Init() + SystemClock_Config()
+  - SystemClock_Config() 是 CubeMX 生成的函数，在 boards/cubemx/.../main.c 中定义
+  - chips 层通过 extern 引用它，不自己定义时钟配置
+  - 这体现了设计原则：时钟配置是板级决策（用什么晶振、跑多快），芯片层只负责调用
+
+4.2 chip_gpio.h — GPIO 操作
+─────────────────────────────
+
+    int chip_gpio_init(const gpio_pin_t *pin);   // 初始化单个引脚
+    int chip_gpio_write(const gpio_pin_t *pin, int level);
+    int chip_gpio_read(const gpio_pin_t *pin);
+    int chip_gpio_toggle(const gpio_pin_t *pin);
+    int chip_gpio_init_all(void);                // CubeMX 的 MX_GPIO_Init()
+
+  注意：
+  - 输入参数是 L2 层的 gpio_pin_t*（跨平台统一类型）
+  - 实现内部将 gpio_mode_t/gpio_pull_t 枚举翻译为具体平台的 HAL 值
+  - chip_gpio_init_all() 调用 CubeMX 的 MX_GPIO_Init() 做 GPIO 时钟使能等初始化
+
+4.3 chip_i2c.h — I2C 总线工厂
+───────────────────────────────
+
+    bus_i2c_t *stm32_i2c_create(void *hi2c);    // STM32 版本
+    bus_i2c_t *at32_i2c_create(void *hi2c);     // AT32 版本
+    bus_i2c_t *esp32_i2c_create(int port, int sda, int scl);  // ESP32 版本
+
+  注意：
+  - 工厂函数的参数可以不同（不同平台的 HAL 句柄类型不同）
+  - 但返回值全部是 bus_i2c_t*（L2 统一类型）
+  - board.c 根据平台调用对应的工厂函数
+  - void* hi2c 参数屏蔽了 I2C_HandleTypeDef 的类型差异
+
+4.4 chip_spi.h — SPI 总线工厂
+───────────────────────────────
+
+    bus_spi_t *stm32_spi_create(void *hspi);
+    bus_spi_t *at32_spi_create(void *hspi);
+    bus_spi_t *esp32_spi_create(int host, int mosi, int miso, int sclk);
+
+
+================================================================================
+5. 核心实现模式（以 STM32G4 + HAL 为例）
+================================================================================
+
+5.1 模式一：将 HAL 操作包装为 L2 虚表
+──────────────────────────────────────
+
+  chips 层最核心的工作：把芯片 HAL 的函数指针填入 bus_i2c_ops_t / bus_spi_ops_t。
+
+  以 I2C 为例：
+
+    // 芯片层内部实现：将 HAL 包装为 bus_i2c_ops_t 的回调
+    static int stm32_i2c_read_reg(void *priv, uint16_t addr,
+                                   uint8_t reg, uint8_t *buf, uint16_t len)
+    {
+        I2C_HandleTypeDef *hi2c = (I2C_HandleTypeDef *)priv;
+        return (HAL_I2C_Mem_Read(hi2c, (uint16_t)(addr << 1), reg,
+                I2C_MEMADD_SIZE_8BIT, buf, len, HAL_MAX_DELAY) == HAL_OK) ? 0 : -1;
+    }
+
+    // 编译时常量虚表（所有实例共享，节省 RAM）
+    static const bus_i2c_ops_t stm32_i2c_ops = {
+        .read_reg  = stm32_i2c_read_reg,
+        .write_reg = stm32_i2c_write_reg,
+        .read      = stm32_i2c_read,
+        .write     = stm32_i2c_write,
+    };
+
+    // 工厂函数：创建总线实例
+    bus_i2c_t *stm32_i2c_create(void *hi2c)
+    {
+        static bus_i2c_t bus;       // 静态分配
+        bus.ops  = &stm32_i2c_ops;
+        bus.priv = hi2c;
+        return &bus;
+    }
+
+  关键决策：
+    ✅ 虚表用 static const → 放在 .rodata 段，所有实例共享，零 RAM 开销
+    ✅ 总线实例用 static 局部变量 → 编译时确定，无需 malloc
+    ✅ HAL 返回值 HAL_OK → 翻译为 0，HAL_ERROR → 翻译为 -1
+    ❌ 不用 malloc（嵌入式不应有内存碎片风险）
+
+5.2 模式二：GPIO 枚举翻译
+──────────────────────────
+
+  chips 层接收 L2 的跨平台枚举（gpio_mode_t, gpio_pull_t），
+  翻译为具体平台的 HAL 常量。
+
+    // gpio_mode_t → STM32 HAL mode
+    static uint32_t stm32_mode(gpio_mode_t m)
+    {
+        switch (m) {
+        case GPIO_MODE_INPUT:        return GPIO_MODE_INPUT;
+        case GPIO_MODE_OUTPUT_PP:    return GPIO_MODE_OUTPUT_PP;
+        case GPIO_MODE_AF_PP:        return GPIO_MODE_AF_PP;
+        // ...
+        }
+    }
+
+  这个 switch 在编译后会被优化为跳转表或条件判断，运行时开销极小。
+  每个平台有自己的翻译函数，但调用者（board.c）无感知。
+
+5.3 模式三：CubeMX 代码的桥接
+───────────────────────────────
+
+  这是 STM32 平台特有的问题。CubeMX 生成的代码有以下特点：
+  - 包含 main() 函数（与我们 L5 冲突）
+  - 外设初始化函数分布在 main.c / gpio.c / i2c.c / spi.c 等文件中
+  - HAL 句柄（hi2c2, hspi1, hspi3）定义在这些 .c 文件中
+
+  解决方案（三层代码的关系）：
+
+    [CubeMX 生成]                               [我们的代码]
+    boards/cubemx/.../main.c            chips/stm32/g4xx/hal/chip_system.c
+      SystemClock_Config()  ───extern──→    chip_system_init() 调用它
+
+    boards/cubemx/.../gpio.c            chips/stm32/g4xx/hal/chip_gpio.c
+      MX_GPIO_Init()        ───extern──→    chip_gpio_init_all() 调用它
+
+    boards/cubemx/.../i2c.c             boards/stm32g431kbu6/board.c
+      hi2c2 定义                           extern I2C_HandleTypeDef hi2c2;
+      MX_I2C2_Init()                       MX_I2C2_Init() + stm32_i2c_create(&hi2c2)
+
+    boards/cubemx/.../spi.c             boards/stm32g431kbu6/board.c
+      hspi1, hspi3 定义                    extern SPI_HandleTypeDef hspi1/hspi3;
+      MX_SPI1_Init() / MX_SPI3_Init()      MX_SPI1_Init() + stm32_spi_create(&hspi1)
+
+  编译时：cubemx/ 下的 .c 文件（除 main.c）参与编译
+  main.c 中的 SystemClock_Config() 也参与编译（被 chip_system.c extern 引用）
+  但 main.c 中的 main() 函数会被排除（通过链接脚本或条件编译或直接不编译 main.c）
+
+5.4 模式四：当前代码的 malloc 问题 — 改为静态分配
+─────────────────────────────────────────────────
+
+  当前 chip_i2c.c 和 chip_spi.c 使用 malloc 分配 bus_i2c_t：
+    bus_i2c_t *bus = (bus_i2c_t *)malloc(sizeof(bus_i2c_t));  // ❌
+
+  问题：
+  - 嵌入式系统不应依赖动态分配
+  - 没有对应的 free，内存泄漏
+  - 片内 RAM 仅 32KB，碎片化风险
+
+  正确做法：静态分配
+
+    bus_i2c_t *stm32_i2c_create(void *hi2c)
+    {
+        static bus_i2c_t bus;      // ✅ 编译时确定，在 .bss 段
+        bus.ops  = &stm32_i2c_ops;
+        bus.priv = hi2c;
+        return &bus;
+    }
+
+  限制：每个工厂函数只能返回单例（一个 I2C 实例）。如果板子有多个 I2C 总线
+  （如 I2C1 + I2C2），需要两个工厂函数或传参区别：
+
+    方案 A（推荐）：不同函数名
+      bus_i2c_t *stm32_i2c1_create(void *hi2c) { static bus_i2c_t bus; ... }
+      bus_i2c_t *stm32_i2c2_create(void *hi2c) { static bus_i2c_t bus; ... }
+
+    方案 B：传入索引
+      bus_i2c_t *stm32_i2c_create(void *hi2c, int index) {
+          static bus_i2c_t bus[2];
+          bus[index].ops = ...;
+          return &bus[index];
+      }
+
+  推荐方案 A，因为函数名明确表达了是哪个外设实例，board.c 调用清晰。
+
+
+================================================================================
+6. 跨平台设计：ST、AT32、ESP32 的差异如何消化
+================================================================================
+
+6.1 差异对比表
+──────────────
+
+  维度          STM32 G4              AT32 F435              ESP32-S3
+  ─────────────────────────────────────────────────────────────────
+  SDK            STM32 HAL             Artery HAL/StdPeriph    ESP-IDF
+  外设句柄       I2C_HandleTypeDef*    i2c_type* 或结构体       i2c_port_t（整数 0/1）
+  时钟配置       CubeMX SystemClock    AT32 BSP system_clock   ESP-IDF menuconfig
+  GPIO操作       HAL_GPIO_Init         gpio_init               gpio_config
+  内存分配       静态或HAL自带         静态或自带               heap_caps_malloc
+  构建系统       CMake + GCC           CMake + GCC             ESP-IDF (CMake wrapper)
+  RTOS           FreeRTOS(可选)        FreeRTOS(可选)          FreeRTOS(内置)
+
+6.2 统一策略：接口同名，实现各异
+────────────────────────────────
+
+  每个平台提供同名 .h 文件，函数签名保持相同的"语义"，但参数类型允许不同：
+
+    // STM32
+    bus_i2c_t *stm32_i2c_create(void *hi2c);
+
+    // AT32（Artery 的 HAL 类似 STM32，句柄也是指针）
+    bus_i2c_t *at32_i2c_create(void *hi2c);
+
+    // ESP32（没有 HAL 句柄，用整数端口号 + 引脚号）
+    bus_i2c_t *esp32_i2c_create(int port, int sda_gpio, int scl_gpio);
+
+  调用侧的差异：
+
+    // STM32 board.c
+    bus_i2c1 = stm32_i2c_create(&hi2c2);
+
+    // AT32 board.c
+    bus_i2c1 = at32_i2c_create(&hi2c1);
+
+    // ESP32 board.c
+    bus_i2c1 = esp32_i2c_create(I2C_NUM_0, GPIO_NUM_8, GPIO_NUM_9);
+
+  每个平台的 board.c 只需要改工厂函数名和参数，其余代码完全相同。
+
+6.3 平台编译隔离
+────────────────
+
+  使用 CMake 的 target_sources 机制按平台选择源文件：
+
+    # CMakeLists.txt
+    if(BOARD_MCU MATCHES "STM32G4")
+        add_subdirectory(chips/stm32/g4xx)
+    elseif(BOARD_MCU MATCHES "AT32F435")
+        add_subdirectory(chips/at32/f435)
+    endif()
+
+  一次编译只编译一个芯片平台的文件，没有 #ifdef 地狱。
+
+
+================================================================================
+7. CubeMX 代码参与编译的具体方案
+================================================================================
+
+7.1 哪些文件参与编译
+────────────────────
+
+  CubeMX 生成的文件分为三类：
+
+  A) 必须编译的（提供 HAL 句柄和初始化函数）：
+     - stm32g4xx_hal_msp.c   （HAL MSP 初始化）
+     - stm32g4xx_it.c        （中断服务函数）
+     - i2c.c / spi.c / gpio.c / usart.c / dma.c / crc.c
+     - system_stm32g4xx.c    （HAL 库自身的系统初始化）
+
+  B) 部分参与编译的（主要函数被引用，main() 被排除）：
+     - main.c                （SystemClock_Config() 参与, main() 不参与）
+
+  C) 不参与编译的（我们的代码有替代）：
+     - syscalls.c / sysmem.c （如果使用标准 semihosting，可用我们自己的实现）
+
+7.2 main.c 的 main() 冲突处理方案
+──────────────────────────────────
+
+  方案一（推荐）：CubeMX main.c 参与编译，但用宏干掉 main()
+    在构建系统中添加 -DNO_CUBEMX_MAIN，CubeMX main.c 的 main() 包裹在
+    #ifndef NO_CUBEMX_MAIN / #endif 中（需要在 USER CODE 区域手动添加）
+
+  方案二：不编译 CubeMX main.c，把需要的函数声明写到我们的代码中
+    chip_system.c 中：
+      extern void SystemClock_Config(void);  // 链接时从 cubemx 的 obj 找，但我们不编译 main.c
+    但实际上 SystemClock_Config 在 main.c 里，不编译 main.c 就拿不到它
+
+  方案三（最干净）：把 SystemClock_Config 移到单独的文件
+    在 CubeMX 中通过"Advanced Settings → 不生成 main.c"（新版本支持）
+    或在 USER CODE 区域把函数拷贝到一个独立的 sysclk.c
+
+  推荐方案一，实现最简单。
+
+7.3 外设句柄的 extern 引用
+──────────────────────────
+
+  CubeMX 生成的 .c 文件中定义了外设句柄：
+    i2c.c:    I2C_HandleTypeDef hi2c2;
+    spi.c:    SPI_HandleTypeDef hspi1;
+    spi.c:    SPI_HandleTypeDef hspi3;
+
+  我们的 board.c 通过 extern 引用它们：
+    extern I2C_HandleTypeDef hi2c2;
+    extern SPI_HandleTypeDef hspi1;
+    extern SPI_HandleTypeDef hspi3;
+
+  注意：CubeMX 配置的是 I2C2（非 I2C1），board.c 和 chip_i2c.c 的注释/变量名
+  应与 CubeMX 保持一致。当前 board.c 写的是 hi2c1，但 CubeMX 生成的是 hi2c2，
+  需要修正。
+
+
+================================================================================
+8. 关键设计决策
+================================================================================
+
+决策 1：chips/hal/ 是薄适配层，不发明新抽象
+  理由：chips 层只有两类代码 —— 枚举翻译（gpio_mode → HAL mode）和函数包装
+  （HAL_I2C_Mem_Read → bus_i2c_ops.read_reg）。不做状态管理，不做业务逻辑。
+
+决策 2：工厂函数返回静态分配单例，不用 malloc
+  理由：嵌入式系统应避免动态分配。总线数量和类型在编译时已知。
+  单例模式：一个工厂函数返回一个实例。
+
+决策 3：不同平台工厂函数名不同（stm32_i2c_create / at32_i2c_create），
+        但返回类型统一（bus_i2c_t*）
+  理由：不同平台的创建参数不同（void* handle vs int port + int sda + int scl），
+  强行统一签名会导致 void* 泛滥或平台细节泄漏。用不同函数名反而清晰。
+
+决策 4：CubeMX 生成的 HAL 句柄和外设初始化函数声明在 cubemx/ 中，
+        chips/ 通过 extern 引用，boards/ 调用初始化并传入工厂
+  理由：HAL 句柄的配置（引脚复用、时钟源）是板级决策，所以由 boards/cubemx/ 管理。
+  chips/hal/ 不关心句柄怎么来的，只关心怎么包装它。
+
+决策 5：芯片厂商的原始 SDK（CMSIS, HAL_Driver）原样保留在 chips/ 下
+  理由：厂商 SDK 升级时，直接覆盖整个目录即可，无需手动合并。
+  我们的适配代码全部在 hal/ 子目录中，与厂商代码隔离。
+
+决策 6：不搞统一的"芯片抽象层 HAL"（即不在 chips/ 之上再加一层统一接口）
+  理由：已经是 L1 了，再抽象一层就变成"L1.5"，增加调用层级但无实际价值。
+  L2 层的 bus_i2c_t/bus_spi_t 就是统一接口，L1 的工作是把不同平台的 HAL 翻译成这些接口。
+
+
+================================================================================
+9. 当前代码需要修正的问题
+================================================================================
+
+问题 1：malloc → 静态分配
+  文件：chip_i2c.c, chip_spi.c
+  修改：stm32_i2c_create() 和 stm32_spi_create() 改用 static 局部变量
+  同时删掉 #include <stdlib.h>
+
+问题 2：hi2c1 命名与实际不符
+  文件：board.c, board.h
+  CubeMX 生成的是 hi2c2（I2C2），board.c 中写的 hi2c1
+  修正：统一为 hi2c2
+
+问题 3：spi.h 中 CS 操作是空函数
+  文件：chip_spi.c 中 stm32_spi_cs_ctl()
+  当前是空实现（(void)priv; (void)level; return 0;）
+  修正：CS 控制应通过 board.c 的 chip_gpio_write(&dev->spi_cs, level) 实现
+  chip_spi.c 的 cs_ctl 可以保留为 NOP，或者从 bus_spi_ops_t 中移除
+  推荐保留但明确文档说明"CS 由 board.c 通过 GPIO 控制"
+
+问题 4：SPI read_reg 中的硬编码 0x80
+  文件：chip_spi.c stm32_spi_read_reg()
+  当前：uint8_t read_cmd = reg | 0x80;
+  问题：0x80 是特定传感器的读命令位，不是 SPI 总线层应关心的
+  修正：chip_spi.c 不应假设传感器的寄存器读写协议。改为提供两种模式：
+    - transfer(tx, rx, len)：标准全双工传输，不附加任何协议
+    - 传感器驱动层（L3）自己处理寄存器地址的拼装（reg | 0x80）
+
+问题 5：I2C 地址左移的处理
+  文件：chip_i2c.c
+  HAL_I2C_Mem_Read(hi2c, (uint16_t)(addr << 1), ...)
+  STM32 HAL 的地址参数期望 8-bit 地址（7位地址 << 1），这里左移是正确的
+  但应该用常量 #define I2C_ADDR_7BIT_TO_8BIT(addr) ((uint16_t)((addr) << 1))
+  而不是裸的 (addr << 1)
+
+问题 6：board_devices[] 当前是空的
+  文件：board.c
+  待更新 board_devices[] 数组以匹配 CubeMX 的配置：
+    - imu     (ICM-42688-P)  SPI1, CS=PB0
+    - magn    (MMC5603)      SPI3, CS=PA15
+    - baro    (BMP390)       I2C2, 地址 0x76（或 0x77，取决于 SDO 引脚）
+
+
+================================================================================
+10. 添加新芯片平台的流程
+================================================================================
+
+  以添加 AT32 F435 为例：
+
+  步骤 1：创建 chips/at32/f435/
+  步骤 2：放入 Artery 官方的 CMSIS + HAL_Driver（不改动）
+  步骤 3：创建 hal/ 子目录
+  步骤 4：实现 hal/chip_system.c（AT32 的时钟初始化）
+  步骤 5：实现 hal/chip_gpio.c（gpio_mode_t → AT32 gpio_init_type 翻译）
+  步骤 6：实现 hal/chip_i2c.c（at32_i2c_create，包装 AT32 I2C HAL）
+  步骤 7：实现 hal/chip_spi.c（at32_spi_create，包装 AT32 SPI HAL）
+  步骤 8：在 boards/ 下创建对应的板子目录
+  步骤 9：构建系统注册新平台
+
+  关键：步骤 4-7 的所有 .h 文件名和函数签名语义与 STM32 版本一一对应。
+  board.c 只需改工厂函数名即可切换平台。
+
+
+================================================================================
+附录 A：当前 STM32G431KBU6 CubeMX 拓扑速查
+================================================================================
+
+  MCU:        STM32G431KBU6, Cortex-M4 + FPU, 128KB Flash, 32KB RAM
+  时钟:       HSE 8MHz → PLL (M=1, N=36, P=2) → 144MHz SYSCLK
+  LED:        PA0, 推挽输出
+  IMU (SPI1): SCK=PA5(AF5), MISO=PA6(AF5), MOSI=PA7(AF5), CS=PB0(GPIO out)
+  MAG (SPI3): SCK=PB3(AF6), MISO=PB4(AF6), MOSI=PB5(AF6), CS=PA15(GPIO out)
+  BARO(I2C2): SDA=PA8(AF4), SCL=PA9(AF4), addr=0x76/0x77
+  USART2:     TX=PA2(AF7), RX=PA3(AF7), 115200
+  USB:        DP=PA12, DM=PA11
+  SWD:        PA13(SWDIO), PA14(SWCLK)
+
+  HAL 句柄:   hi2c2 (I2C2), hspi1 (SPI1), hspi3 (SPI3), huart2 (USART2)
+
+
+附录 B：跨平台代码对比（I2C 工厂函数）
+================================================================================
+
+  STM32 G4:
+    bus_i2c_t *stm32_i2c_create(void *hi2c)
+    {
+        static bus_i2c_t bus;
+        bus.ops  = &stm32_i2c_ops;   // 指向 HAL 包装
+        bus.priv = hi2c;             // I2C_HandleTypeDef*
+        return &bus;
+    }
+
+  AT32 F435:
+    bus_i2c_t *at32_i2c_create(void *hi2c)
+    {
+        static bus_i2c_t bus;
+        bus.ops  = &at32_i2c_ops;    // 指向 Artery HAL 包装
+        bus.priv = hi2c;             // i2c_type*
+        return &bus;
+    }
+
+  ESP32-S3:
+    bus_i2c_t *esp32_i2c_create(int port, int sda, int scl)
+    {
+        static bus_i2c_t bus;
+        esp32_i2c_priv_t *priv = &esp32_i2c_priv;  // 芯片层私有扩展
+        priv->port = port;
+        priv->sda  = sda;
+        priv->scl  = scl;
+        bus.ops  = &esp32_i2c_ops;   // 指向 ESP-IDF 包装
+        bus.priv = priv;             // esp32_i2c_priv_t*
+        return &bus;
+    }
+
+  三种实现的接口
