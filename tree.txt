@@ -1,0 +1,43 @@
+.
+├── app
+│   └── user_main.c
+├── boards
+│   ├── at32f435
+│   └── stm32g431kbu6
+│       ├── board.c
+│       ├── board_config.h
+│       ├── board.h
+│       ├── cubemx
+│       │   └── board
+│       ├── linker
+│       │   └── STM32G431XX_FLASH.ld
+│       └── startup
+│           └── startup_stm32g431xx.s
+├── chips
+│   ├── at32
+│   │   └── f435
+│   └── stm32
+│       └── g4xx
+│           ├── CMSIS
+│           ├── port
+│           └── STM32G4xx_HAL_Driver
+├── CMakeLists.txt
+├── docs
+│   ├── AHRS架构设计方案.pdf
+│   ├──  coding_standards.txt
+│   └── generate_arch_pdf.py
+├── drivers
+│   ├── hal
+│   └── sensors
+│       ├── baro
+│       ├── imu
+│       └── magn
+├── Kconfig
+├── libs
+├── Makefile
+├── middleware
+├── README.md
+├── tools
+└── tree.txt
+
+27 directories, 14 files
