@@ -1,0 +1,15 @@
+
+#
+# Application Settings
+#
+CONFIG_LED_ENABLE=y
+CONFIG_LED_INSTANCE=0
+# end of Application Settings
+
+#
+# Sensor Drivers
+#
+CONFIG_DRIVER_IMU_ENABLE=y
+# CONFIG_DRIVER_BARO_ENABLE is not set
+# CONFIG_DRIVER_MAGN_ENABLE is not set
+# end of Sensor Drivers

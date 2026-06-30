@@ -1,0 +1,23 @@
+mainmenu "AHRS — STM32G431KBU6 v1"
+
+menu "Application Settings"
+    config LED_ENABLE
+        bool "Enable onboard LED"
+        default y
+        help
+          Enable PA0 LED for status indication.
+endmenu
+
+menu "Sensor Drivers"
+    config DRIVER_IMU_ENABLE
+        bool "Enable IMU Driver (ICM-42688-P)"
+        default y
+
+    config DRIVER_BARO_ENABLE
+        bool "Enable Barometer Driver"
+        default n
+
+    config DRIVER_MAGN_ENABLE
+        bool "Enable Magnetometer Driver (MMC5603)"
+        default n
+endmenu
