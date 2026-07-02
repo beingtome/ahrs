@@ -8,7 +8,6 @@ typedef struct drv_gpio_dev {
     GPIO_TypeDef *port;
     uint32_t pin;
     uint32_t instance;
-    uint8_t level;
     struct drv_gpio_dev *next;
 } drv_gpio_dev_t;
 

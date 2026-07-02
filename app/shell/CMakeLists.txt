@@ -1,5 +1,3 @@
-add_subdirectory(shell)
-
 file(GLOB SRCS
     *.c
 )

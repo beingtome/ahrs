@@ -13,6 +13,7 @@ KCONFIG     := Kconfig
 
 KCONFIG_PY  := tool/scripts/kconfig_gen.py
 JOBS        ?= $(shell nproc 2>/dev/null || echo 4)
+GENERATOR   ?= Ninja
 
 OOCD_IF     ?= interface/jlink.cfg
 OOCD_TGT    ?= target/stm32g4x.cfg
@@ -36,7 +37,7 @@ build:
 	else \
 		echo "/* stub */" > $(AUTOCONF); \
 	fi
-	@cmake -B $(BUILD_DIR) \
+	@cmake -B $(BUILD_DIR) -G $(GENERATOR) \
 		-DBOARD=$(BOARD)
 	@cmake --build $(BUILD_DIR) -j $(JOBS)
 
